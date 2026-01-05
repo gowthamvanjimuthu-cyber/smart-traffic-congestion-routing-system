@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Smart Traffic Routing System</title>
+
+<link rel="stylesheet"
+href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+<style>
+body {
+  margin: 0;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: #f4f6f8;
+}
+header {
+  background: linear-gradient(135deg, #1a73e8, #4285f4);
+  color: white;
+  padding: 14px;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 600;
+}
+#panel {
+  background: white;
+  padding: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+input {
+  width: 240px;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+}
+button {
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+}
+.primary { background: #1a73e8; color: white; }
+.secondary { background: #34a853; color: white; }
+.warning { background: #fbbc05; color: black; }
+#status {
+  width: 100%;
+  text-align: center;
+  font-size: 13px;
+  color: #555;
+}
+#map {
+  height: calc(100vh - 170px);
+}
+</style>
+</head>
+
+<body>
+
+<header>🚦 Smart Traffic Congestion & Routing System</header>
+
+<div id="panel">
+  <button class="primary" onclick="useLiveLocation()">📍 Use Live Location</button>
+  <span>OR click on map</span>
+  <input id="destination" placeholder="Enter destination">
+  <button class="secondary" onclick="searchRoute()">Search Route</button>
+  <button class="warning" onclick="smartRoute()">Smart Route</button>
+  <div id="status">Select start location</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+/* ---------------- MAP ---------------- */
+let map = L.map('map').setView([11.6643,78.1460], 14);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenStreetMap'
+}).addTo(map);
+
+let startPoint = null;
+let startMarker = null;
+let routeLayer = null;
+
+/* ---------------- SMART ROUTE STATE ---------------- */
+let cachedRoutes = [];
+let routeIndex = 0;
+let cachedKey = "";
+
+/* ---------------- START LOCATION ---------------- */
+map.on('click', e => {
+  startPoint = [e.latlng.lat, e.latlng.lng];
+  placeStartMarker("Start Location");
+  document.getElementById("status").innerText = "Start location selected";
+});
+
+function useLiveLocation(){
+  navigator.geolocation.getCurrentPosition(pos => {
+    startPoint = [pos.coords.latitude, pos.coords.longitude];
+    map.setView(startPoint, 15);
+    placeStartMarker("Live Location");
+    document.getElementById("status").innerText = "Live location selected";
+  });
+}
+
+function placeStartMarker(text){
+  if(startMarker) map.removeLayer(startMarker);
+  startMarker = L.marker(startPoint).addTo(map)
+    .bindPopup(text).openPopup();
+}
+
+/* ---------------- DESTINATION ---------------- */
+function getDestination(place){
+  return fetch(`https://nominatim.openstreetmap.org/search?q=${place}&format=json`)
+    .then(res => res.json())
+    .then(data => [parseFloat(data[0].lat), parseFloat(data[0].lon)]);
+}
+
+/* ---------------- DRAW ---------------- */
+function drawRoute(route, color){
+  if(routeLayer) map.removeLayer(routeLayer);
+  let coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+  routeLayer = L.polyline(coords, { color, weight: 6 }).addTo(map);
+  map.fitBounds(routeLayer.getBounds());
+}
+
+/* ---------------- NORMAL ROUTE ---------------- */
+function searchRoute(){
+  if(!startPoint) return alert("Select start location first");
+  let place = document.getElementById("destination").value;
+  if(!place) return alert("Enter destination");
+
+  cachedRoutes = [];
+  cachedKey = "";
+  routeIndex = 0;
+
+  getDestination(place).then(dest => {
+    let start = `${startPoint[1]},${startPoint[0]}`;
+    let end = `${dest[1]},${dest[0]}`;
+
+    fetch(`https://router.project-osrm.org/route/v1/driving/${start};${end}?overview=full&geometries=geojson`)
+      .then(res => res.json())
+      .then(data => {
+        drawRoute(data.routes[0], "#1a73e8");
+        document.getElementById("status").innerText = "Normal route shown";
+      });
+  });
+}
+
+/* ---------------- SMART ROUTE (FINAL FIX) ---------------- */
+function smartRoute(){
+  if(!startPoint) return alert("Select start location first");
+  let place = document.getElementById("destination").value;
+  if(!place) return alert("Enter destination");
+
+  getDestination(place).then(dest => {
+    let key = `${startPoint[0]},${startPoint[1]}-${dest[0]},${dest[1]}`;
+
+    // If routes already cached → cycle ONLY
+    if(cachedKey === key && cachedRoutes.length > 0){
+      showCachedRoute();
+      return;
+    }
+
+    // Else fetch ONCE
+    cachedKey = key;
+    routeIndex = 0;
+
+    let start = `${startPoint[1]},${startPoint[0]}`;
+    let end = `${dest[1]},${dest[0]}`;
+
+    fetch(`https://router.project-osrm.org/route/v1/driving/${start};${end}?alternatives=true&overview=full&geometries=geojson`)
+      .then(res => res.json())
+      .then(data => {
+        // FIXED ORDER: sort once, freeze forever
+        cachedRoutes = data.routes
+          .sort((a,b)=>a.distance-b.distance)
+          .slice(0,3);
+
+        showCachedRoute();
+      });
+  });
+}
+
+function showCachedRoute(){
+  const colors = ["green","orange","red"];
+  let route = cachedRoutes[routeIndex];
+  let color = colors[routeIndex];
+
+  drawRoute(route, color);
+  document.getElementById("status").innerText =
+    `Smart Route Choice ${routeIndex + 1}`;
+
+  routeIndex = (routeIndex + 1) % cachedRoutes.length;
+}
+</script>
+
+</body>
+</html>
